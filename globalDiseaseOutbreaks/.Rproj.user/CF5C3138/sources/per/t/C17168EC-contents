@@ -1,0 +1,233 @@
+########################################################################################
+########## A global dataset of pandemic- and epidemic-prone disease outbreaks ########## 
+########################################################################################
+
+### Packages ###
+if(!require("stringr")) install.packages("stringr")
+if(!require("tidyverse")) install.packages("tidyverse")
+if(!require("stringr")) install.packages("stringr")
+if(!require("rvest")) install.packages("rvest")
+if(!require("renv")) install.packages("renv")
+if(!require("clock")) install.packages("clock")
+if(!require("lubridate")) install.packages("lubridate")
+
+## To load in the current session and also write the infrastructure necessary to 
+## ensure the project is auto-loaded for newly-launched R sessions 
+activate()
+
+## Default Language: English
+Sys.setenv(LANG = "en")
+Sys.setlocale("LC_TIME", "English")
+
+############################### Information on outbreaks ############################### 
+
+### Database on disease outbreaks from the WHO web https://www.who.int/emergencies/disease-outbreak-news ###
+# empty dataset
+data <- data.frame("Outbreak" = NA,
+                   "Date" = NA,
+                   "Year" = NA,
+                   "Month" = NA,
+                   "Day" = NA,
+                   "Description" = NA,
+                   "Link" = NA)
+
+## Reading the web page ##
+for(page in 1:133){
+  
+  webpage <- read_html(paste0("https://www.who.int/emergencies/disease-outbreak-news/", page))
+  
+ # Extracting the link from each DON
+  newslink <- webpage %>% 
+    html_nodes("a.sf-list-vertical__item") %>%
+    html_attr("href")
+  
+  for(news in 1:length(newslink)){
+    data[(page-1)*20+news, "Link"] <- newslink[news]
+    
+    # Extracting the title from each DON
+    data[(page-1)*20+news, "Outbreak"] <- read_html(newslink[news]) %>%
+      html_nodes("ul.sf-breadscrumb.breadcrumb") %>%
+      html_elements("li.active") %>%
+      html_text2()  
+    
+    # Extracting the information on date from each DON
+    data[(page-1)*20+news, "Date"] <- read_html(newslink[news]) %>%
+      html_nodes("div.sf-item-header-wrapper") %>%
+      html_elements("span.timestamp") %>%
+      html_text2()  
+    
+    # Extracting the Description from each DON
+    data[(page-1)*20+news, "Description"] <- read_html(newslink[news]) %>%
+      html_nodes("article.sf-detail-body-wrapper") %>%
+      html_text2()
+  }
+}   
+
+data <- data %>% 
+  mutate(Date = as.Date(Date, format = "%d %b %Y")) %>%
+  mutate(Year = get_year(Date), 
+         Month = get_month(Date), 
+         Day = get_day(Date))
+
+save(data, file = "DON.RData") ## Saving all DON's
+
+# 2019 is not complete
+# We take the information from the ReliefWeb, the humanitarian information project of the United Nations Office for the Coordination of Humanitarian Affairs.
+data2019 <- data.frame("Outbreak" = NA,
+                       "Date" = NA,
+                       "Year" = NA,
+                       "Month" = NA,
+                       "Day" = NA,
+                       "Description" = NA,
+                       "Link" = NA)
+
+for(page in 1:6){
+  
+  webpage <- read_html(paste0("https://reliefweb.int/updates?advanced-search=%28S1275%29_%28DO20190101-20191231%29&search=%22disease%20outbreak%20news%22&page=", page-1))
+  
+  # Extracting the title of the DON from each DON
+  newsoutbreaks <- webpage %>% 
+    html_nodes("article") %>%
+    html_node("h4") %>%
+    html_text2()
+  
+  # Extracting the link from each DON
+  newslink <- webpage %>% 
+    html_nodes("article") %>%
+    html_node("header") %>%
+    html_node("h4") %>%
+    html_node("a") %>%
+    html_attr("href")
+  
+  for(news in 1:length(newsoutbreaks)){
+    data2019[(page-1)*20+news, "Link"] <- newslink[news]
+    data2019[(page-1)*20+news, "Outbreak"] <- newsoutbreaks[news]
+    
+    # Extracting the information on date from each DON
+    data2019[(page-1)*20+news, "Date"] <- read_html(newslink[news]) %>%
+      html_node("dl.meta.core") %>%
+      html_element("dd.date.published") %>%
+      html_text2()  
+    
+    # Extracting the Description from each DON
+    data2019[(page-1)*20+news, "Description"] <- read_html(newslink[news]) %>%
+      html_nodes("div.content") %>%
+      html_nodes("div.content") %>%
+      html_text2()
+  }
+} # 119 DON´s related to 2019
+
+data2019 <- data2019 %>% 
+  mutate(Date = as.Date(Date, format = "%d %b %Y")) %>% 
+  mutate(Year = get_year(Date), 
+         Month = get_month(Date), 
+         Day = get_day(Date))
+
+### Extract all years except 2019 from data
+dataSub <- data %>% 
+  filter(Year != 2019) # 2659-2602 = 57
+
+save(dataSub, file = "dataSub.RData")
+
+## All DONs together ##
+DONsdf <- bind_rows(dataSub, data2019) %>% # 2721 
+  arrange(desc(Year), desc(Month), desc(Day), desc(Link)) %>% # Ordering data by date
+  rowid_to_column() %>%
+  mutate(ID = paste0("DON", str_pad(rev(rowid), 4, pad = "0"))) %>% # ID to identify each DON. Assigning an ID to each report. Oldest one is DON0001
+  select(-rowid)
+
+### Disease names ###
+## Setting homogeneous names ##
+# International Classification of Diseases ##
+icd <- read.csv(file = "icd1011.csv", sep = ";", encoding = "UTF-8")
+
+# Extracting disease name #
+DONsdf2 <- DONsdf %>%
+  mutate(Disease = case_when(Year > 2013 ~  str_split(str_split(str_split(str_split(Outbreak, " – ", simplify = TRUE)[, 1], " - ", simplify = TRUE)[, 1], " ｰ ", simplify = TRUE)[, 1],"- ", simplify = TRUE)[, 1],  
+                             Year <= 2002 ~ str_split(str_split(Outbreak, " - ", simplify = TRUE)[, 2], " in ", simplify = TRUE)[, 1],
+                             TRUE ~ str_split(Outbreak, " – ", simplify = TRUE)[, 1]))
+  
+
+DONsdf2 <- DONsdf %>%
+  mutate(Disease = case_when(Year > 2013 ~  str_split(str_split(str_split(str_split(Outbreak, " – ", simplify = TRUE)[, 1], " - ", simplify = TRUE)[, 1], " ｰ ", simplify = TRUE)[, 1],"- ", simplify = TRUE)[, 1],  
+                             TRUE ~ str_split(str_split(Outbreak, " in ", simplify = TRUE)[, 2], " - ", simplify = TRUE)[, 1])) 
+
+
+  
+  mutate(Disease = case_when(Year <= 2013 ~ str_split(Outbreak, " in ", simplify = TRUE)[, 1], 
+                             TRUE ~ str_split(Outbreak, " – ", simplify = TRUE)[, 1]))
+  
+
+  strsplit(newsoutbreak, " in ")[[1]][1] # outbreak
+  
+  mutate(Disease = str_split(Outbreak, " – ", simplify = TRUE)[, 1]) %>%
+  mutate(Disease = str_split(Disease, " - ", simplify = TRUE)[, 1]) %>%
+  mutate(Disease = str_split(Disease, " ｰ ", simplify = TRUE)[, 1]) %>%
+  mutate(Disease = str_split(Disease, "- ", simplify = TRUE)[, 1]) 
+
+DONsdf3 <- DONsdf2 %>%
+  mutate(icd404n = Disease) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Yellow Fever", replacement = "Yellow fever, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Lassa Fever", replacement = "Lassa fever")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Extensively drug-resistant Shigella sonnei infections", replacement = "Shigellosis due to Shigella flexneri")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Wild poliovirus type 1 \\(WPV1\\)", replacement = "Acute poliomyelitis, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Measles", replacement = "Measles")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Dengue", replacement = "Dengue, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Cholera", replacement = "Classical cholera")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Hepatitis E virus", replacement = "Acute hepatitis E")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Influenza A \\(H5\\)", replacement = "Influenza due to identified zoonotic or pandemic influenza virus")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Ebola virus disease", replacement = "Ebola virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Dengue fever", replacement = "Dengue, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Middle East respiratory syndrome coronavirus \\(MERS-CoV\\)", replacement = "Middle East respiratory syndrome coronavirus [MERS-CoV]")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Circulating vaccine-derived poliovirus type 2 \\(cVDPV2\\)", replacement = "Acute poliomyelitis, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Monkeypox", replacement = "Monkeypox")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Zika Virus Disease", replacement = "Zika virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Plague", replacement = "Plague, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Nipah virus disease", replacement = "Other viral infections of unspecified site")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Meningitis", replacement = "Plague, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Marburg virus disease", replacement = "Marburg virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Human infection with avian influenza A\\(H5N1\\)", replacement = "Influenza due to identified zoonotic or pandemic influenza virus")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Ebola", replacement = "Ebola virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Human infection with avian influenza A\\(H10N3\\)", replacement = "Influenza due to identified zoonotic or pandemic influenza virus")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Circulating vaccine-derived poliovirus type 2", replacement = "Acute poliomyelitis, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Human infection with avian influenza A \\(H5N8\\)", replacement = "Influenza due to identified zoonotic or pandemic influenza virus")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Rift valley fever", replacement = "Rift Valley fever")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Influenza A \\(H3N2\\)", replacement = "Influenza due to identified zoonotic or pandemic influenza virus")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "MERS-CoV", replacement = "Middle East respiratory syndrome coronavirus [MERS-CoV]")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Influenza A\\(H1N2\\)", replacement = "Influenza due to identified zoonotic or pandemic influenza virus")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "COVID-19", replacement = NA)) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Acute hepatitis E", replacement = "Acute hepatitis E")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Avian Influenza A\\(H5N1\\)", replacement = "Influenza due to identified zoonotic or pandemic influenza virus")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Mayaro virus disease", replacement = "Other specified mosquito-borne viral fevers")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Oropouche virus disease", replacement = "Oropouche virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Dracunculiasis", replacement = "Dracunculiasis")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Dengue Fever", replacement = "Dengue, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Novel Coronavirus", replacement = "Middle East respiratory syndrome coronavirus [MERS-CoV]")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Disease outbreak news: Yellow fever", replacement = "Yellow fever, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Rift Valley Fever", replacement = "Rift Valley fever")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Circulating vaccine-derived poliovirus type 1", replacement = "Acute poliomyelitis, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Disease outbreak news: Cholera", replacement = "Classical cholera")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Polio outbreak", replacement = "Acute poliomyelitis, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Cases of Undiagnosed Febrile Illness", replacement = "Other and unspecified infectious diseases")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Maladie à virus Ebola", replacement = "Ebola virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "HIV Cases", replacement = "Unspecified human immunodeficiency virus [HIV] disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Wild poliovirus type 1", replacement = "Acute poliomyelitis, unspecified")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Chikungunya", replacement = "Chikungunya virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "Zika virus infection", replacement = "Zika virus disease")) %>%
+  mutate(icd404n = gsub(x = icd404n, pattern = "COVID-19", replacement = NA)) %>%
+  
+
+
+
+# iso codes #
+iso <- read.csv(file = "isocodes.csv", sep = ";", encoding = "UTF-8")
+
+# Extracting country name #
+DONsdf4 <- DONsdf3 %>%
+  mutate(Country = str_split(Outbreak, " – ", simplify = TRUE)[, 2]) %>%
+  mutate(Country = case_when(Country == "" ~ str_split(Outbreak, " - ", simplify = TRUE)[, 2], TRUE ~ Country))
+
+strsplit(newsoutbreak, " in ")[[1]][2] # country
+
+
+

@@ -1,0 +1,5 @@
+
+
+aggregate(shpdata$freq,
+          by = list(shpdata$continent),
+          FUN = sum)

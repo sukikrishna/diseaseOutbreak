@@ -1,0 +1,255 @@
+###################################################### 
+################## ENLIGHT PROJECT ###################
+###################################################### 
+
+## A.1 Urban and environmental variables explaining 
+## the frequency of pandemics 
+
+## Exploratory Spatial Data Analysis (ESDA) ##
+
+### Working directory ###
+# setwd(choose.dir())
+setwd(dir = "ENLIGHT/Data/")
+
+### Packages ###
+if(!require("foreign")) install.packages("foreign")
+if(!require("reshape")) install.packages("reshape")
+if(!require("ggspatial")) install.packages("ggspatial")
+if(!require("tidyverse")) install.packages("tidyverse")
+if(!require("sf")) install.packages("sf")
+if(!require("ggmap")) install.packages("ggmap")
+if(!require("spdep")) install.packages("spdep")
+if(!require("ggthemes")) install.packages("ggthemes")
+if(!require("rgdal")) install.packages("rgdal")
+
+## load data ##
+load("~/ENLIGHT/Data/Outbreaks.RData")
+
+Outbreaks$Ones <- 1
+length(levels(factor(Outbreaks$icd10c))) # 19
+length(levels(factor(Outbreaks$icd103c))) # 49
+length(levels(factor(Outbreaks$icd104c))) # 70
+
+length(levels(factor(Outbreaks$icd11c1))) # 5
+length(levels(factor(Outbreaks$icd11l2))) # 23
+length(levels(factor(Outbreaks$icd11c3))) # 64
+
+outbreaks10c <- cast(Outbreaks[, c("Country", "iso3", "Year", "Ones", "icd10c")], Country + iso3 + Year ~ icd10c, value = "Ones", fun.aggregate = sum)
+outbreaks10c$Freq <- rowSums(outbreaks10c[, 4:22])
+
+outbreaks104c <- cast(Outbreaks[, c("Country", "iso3", "Year", "Ones", "icd104c")], Country + iso3 + Year ~ icd104c, value = "Ones", fun.aggregate = sum)
+
+outbreaks <- merge(outbreaks104c, outbreaks10c, by = c("Country", "iso3", "Year"))
+
+## GIS information ##
+shpsf <- read_sf("GeoData/world-administrative-boundaries.shp") 
+# https://public.opendatasoft.com/explore/dataset/world-administrative-boundaries/export/
+
+## The sum of frequencies of diseases all years per Country ##
+diseases <- cast(outbreaks[, c("Country", "iso3", "Freq")], iso3 + Country ~ ., fun.aggregate = sum)
+
+colnames(diseases)[3] <- "freq"
+
+# Joining diseases data with shapefile
+shpdata <- merge(shpsf, na.omit(diseases), by = "iso3", all.x = TRUE)
+
+shpdata[shpdata$name == "Gaza Strip", "freq"] <- diseases[diseases$Country == "Palestine State of", "freq"]
+
+shpdata[is.na(shpdata$freq) == TRUE, "freq"] <- 0
+
+GeoOutbreaks <- shpdata[, c(1, 4:6, 8, 10:11)]
+
+save(GeoOutbreaks, file = "GeoOutbreaks.RData")
+
+aggregate(freq ~ continent, shpdata, sum)[, "freq"]/sum(shpdata$freq)
+
+######
+knitr::opts_chunk$set(echo = TRUE)
+options(prompt = "R> ", digits = 4, scipen = 999)
+
+######################
+# World 
+#####################
+shpsfort <- fortify(shpsf)
+
+ggplot(data = shpdata) +
+  geom_sf(data = shpsfort, fill = "white", color = "#999999") + 
+  geom_sf(aes(fill = freq), color = "black") +
+  scale_fill_continuous(low = "white", high = "#E69F00") + 
+  annotation_north_arrow(aes(location = "br")) + 
+  annotation_scale() + 
+  labs(fill = "Frequency") + 
+  theme_minimal() 
+
+## barplots ##
+# by country #
+bycountry <- shpdata[order(-shpdata$freq),]
+rownames(bycountry) <- 1:nrow(bycountry)
+
+ggplot(bycountry[1:20, ], aes(y = freq, x = reorder(name, -freq), fill = continent)) + 
+  geom_bar(stat = "identity") +  
+  scale_fill_colorblind() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) +
+  ylab("Total frequency of outbreaks (1996-2020)") + 
+  xlab("Country") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# by disease #
+bydisease <- cast(Outbreaks[, c("Disease", "Ones")], Disease ~ ., fun.aggregate = sum)
+colnames(bydisease)[2] <- "freq"
+bydisease <- bydisease[order(-bydisease$freq), ]
+bydisease$Disease <- as.factor(bydisease$Disease)
+
+levels(bydisease$Disease) <- gsub(" ", "\n", levels(bydisease$Disease))
+rownames(bydisease) <- 1:nrow(bydisease)
+
+ggplot(bydisease[1:20, ], aes(y = freq, x = reorder(Disease, -freq))) + 
+  geom_bar(stat = "identity") +  
+  scale_fill_colorblind() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 30)) +
+  ylab("Total frequency of outbreaks (1996-2020)") + 
+  xlab("Disease") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# by Year #
+byYear <- cast(Outbreaks[, c("Year", "Ones")], Year ~ ., fun.aggregate = sum)
+colnames(byYear)[2] <- "freq"
+byYear <- byYear[order(-byYear$freq), ]
+byYear$Year <- as.factor(byYear$Year)
+
+ggplot(byYear, aes(y = freq, x = Year)) + 
+  geom_bar(stat = "identity") +  
+  scale_fill_colorblind() +
+  ylab("Total frequency of outbreaks (1996-2020)") + 
+  xlab("Year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90)) 
+
+### ESDA ###
+neighbourstrshpdata <- poly2nb(shpdata, queen = FALSE)
+neighbourstrshpdata
+
+## Calculating the spatial autocorrelation ##
+shpdata$sfreq <- as.vector(scale(shpdata$freq, center = TRUE, scale = TRUE))
+summary(shpdata$freq)
+
+## Neighbourhood structure of the countries as list ##
+# , the use of a variance-stabilising coding scheme has been proposed by Tiefelsdorf et al. (1999) and is provided
+# as style="S". The weights vary, less than for style="W", but the row sums of weights by area vary more than
+# for style="W" (where they are alway unity) and less than for styles B, C, or U. This style also makes asymmetric
+# weights, but as with style="W", they may be similar to symmetric if the neighbours list was itself symmetric.
+listneshpdatas <- nb2listw(neighbourstrshpdata, zero.policy = TRUE, style = "S")
+
+######################
+# Moran’s I test
+#####################
+morangshpdata <- moran.test(shpdata$sfreq, listneshpdatas, zero.policy = TRUE)
+morangshpdata
+
+# Interpretation 
+# Are data clustered, dispersed, or random distributed in the geographic space?
+# Null hypothesis: data are completely randomly distributed 
+# if Null is rejected, then:
+# a) Positive Moran I statistic -> more spatially clustered than randomly distributed
+# b) Negative Moran I statistic -> more spatially dispersed than randomly distributed
+
+# Moran I statistic standard deviate = 6, p-value = 0.000000001
+# alternative hypothesis: greater
+# sample estimates:
+#  Moran I statistic       Expectation          Variance 
+#   0.316473         -0.005882          0.002917                     
+
+## Monte-Carlo simulation of Moran's I
+moranmcshpdata <- moran.mc(shpdata$sfreq, listneshpdatas, nsim = 999, zero.policy = TRUE)
+
+## Plot of Moran's I
+moranplotshpdata <- moran.plot(shpdata$sfreq, listneshpdatas, 
+                               labels = as.character(shpdata$name), zero.policy = TRUE, 
+                               xlab = "Frequency of disease events (standardized)", ylab = "Lag frequency")
+
+## Local Moran  
+moranlshpdata <- localmoran(shpdata$sfreq, listneshpdatas, zero.policy = TRUE)
+colnames(moranlshpdata)[5] <- "Prob"
+
+shpdata <- merge(shpdata, moranlshpdata, by = "row.names")
+
+shpdata$lagsfreq <- lag.listw(var = shpdata$sfreq, x = listneshpdatas, zero.policy = TRUE)
+
+## Map of local Moran
+shpdata$quad_sig <- "Missing data"
+shpdata[(shpdata$sfreq >= 0 & shpdata$lagsfreq >= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sig"] <- "High-High"
+shpdata[(shpdata$sfreq <= 0 & shpdata$lagsfreq <= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sig"] <- "Low-Low"
+shpdata[(shpdata$sfreq >= 0 & shpdata$lagsfreq <= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sig"] <- "High-Low"
+shpdata[(shpdata$sfreq <= 0 & shpdata$lagsfreq >= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sig"] <- "Low-High"
+shpdata[(!is.na(shpdata$Prob) & shpdata$Prob >= 0.05), "quad_sig"] <- "Not Significant"
+# assign a 5 to a non-significant observations
+
+shpdata$quad_sigColor <- "white"
+shpdata[(shpdata$sfreq >= 0 & shpdata$lagsfreq >= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sigColor"] <- "#D55E00"
+shpdata[(shpdata$sfreq <= 0 & shpdata$lagsfreq <= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sigColor"] <- "#0072B2"
+shpdata[(shpdata$sfreq >= 0 & shpdata$lagsfreq <= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sigColor"] <- "#CC79A7"
+shpdata[(shpdata$sfreq <= 0 & shpdata$lagsfreq >= 0) & (!is.na(shpdata$Prob) & shpdata$Prob <= 0.05), "quad_sigColor"] <- "#56B4E9"
+shpdata[(!is.na(shpdata$Prob) & shpdata$Prob >= 0.05), "quad_sigColor"] <- "grey94"
+
+# set the corresponding labels for the thematic map classes
+labels <- c("High-High", "Low-Low", "High-Low", "Low-High", "Not Significant", "Missing data")
+# assign colors to each map class
+colors <- as.character(c("#D55E00", "#0072B2", "#CC79A7", "#56B4E9", "grey94", "white"))
+
+shpdata$quad_sig <- as.factor(shpdata$quad_sig)
+shpdata$quad_sig <- factor(shpdata$quad_sig, levels = c(levels(shpdata$quad_sig), labels[!labels %in% levels(shpdata$quad_sig)]))
+shpdata$quad_sig <- factor(shpdata$quad_sig, levels = labels)
+shpdata$quad_sigColor  <- as.factor(shpdata$quad_sigColor)
+shpdata$quad_sigColor <- factor(shpdata$quad_sigColor, levels = c(levels(shpdata$quad_sigColor),
+                                                                  colors[!colors %in% levels(shpdata$quad_sigColor)]))
+shpdata$quad_sigColor <- factor(shpdata$quad_sigColor, levels = colors)
+shpdatacoords <- as.data.frame(st_coordinates(shpdata))
+
+## plots moran plotshpdata
+ggplot(moranplotshpdata, aes(x = x, y = wx)) + 
+  geom_point(shape = 1, size = 2) + 
+  geom_hline(yintercept = mean(moranplotshpdata$wx), lty = 2) +
+  geom_vline(xintercept = mean(moranplotshpdata$x), lty = 2) + 
+  geom_smooth(formula = y ~ x, method = "lm", se = FALSE, color = "black") + 
+  geom_point(data = moranplotshpdata[moranplotshpdata$is_inf == TRUE, ],
+             aes(x = x, y = wx), size = 2.5) + 
+  geom_text(data = moranplotshpdata[moranplotshpdata$is_inf == TRUE, ],
+            check_overlap = TRUE, 
+            vjust = 1.5,
+            aes(label = labels)) + 
+  xlab("Frequency of disease events (standardized)") + 
+  ylab("Spatially lagged frequency of disease events") +
+  theme_minimal() 
+
+### Plot Moran's I p-value
+ggplot(data = shpdata) +
+  geom_sf(data = shpsfort, fill = "white", color = "white") + 
+  geom_sf(aes(fill = Prob), color = "black") +
+  coord_sf(xlim = c(min(shpdatacoords[,'X']), max(shpdatacoords[,'X'])), ylim = c(min(shpdatacoords[,'Y']), max(shpdatacoords[,'Y'])),
+           datum = NA, expand = FALSE) +
+  scale_fill_gradient2(low = "#009E73", mid = "#F0E442", high = "white", 
+                       midpoint = 0.1, 
+                       na.value = "white",
+                       limits = c(0, 0.2)) + 
+  annotation_north_arrow(aes(location = "br")) + 
+  annotation_scale() + 
+  labs(fill = "Local Moran's I p-value") + 
+  theme_minimal() 
+
+ggplot(data = shpdata) +
+  geom_sf(data = shpsfort, fill = "white", color = "grey") + 
+  geom_sf(aes(fill = quad_sig), color = "black") +
+  scale_fill_manual(values = colors[labels %in% unique(shpdata$quad_sig)]) + 
+  #geom_sf_label(data = shpdata[shpdata$quad_sig != "Not Significant" & shpdata$quad_sig != "Missing data", ],
+  #              aes(label = name), 
+  #              label.size = NA,
+  #              fill = NA) + 
+  annotation_north_arrow(aes(location = "br")) + 
+  annotation_scale() + 
+  xlab(NULL) + 
+  ylab(NULL) +
+  labs(fill = "LISA Cluster") + 
+  theme_minimal() 
+
