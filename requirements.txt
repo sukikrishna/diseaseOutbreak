@@ -1,0 +1,8 @@
+# Streamlit for hosting the app
+streamlit>=1.0
+
+# Plotly for data visualization
+plotly>=5.0
+
+pandas>=1.2
+numpy>=1.20
