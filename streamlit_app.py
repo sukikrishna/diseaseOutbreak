@@ -2,6 +2,12 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+# Set up tabs in Streamlit
+st.set_page_config(
+    page_title='Infectious Disease Analysis',
+    page_icon=':microbe:',
+)
+
 # Load the dataset
 @st.cache_data
 def load_outbreak_data():
@@ -13,10 +19,53 @@ def load_outbreak_data():
 def load_infectious_cases_data():
     return pd.read_csv('infectiouscases.csv')
 
+def load_data():
+    """Load and process global infectious disease outbreak data."""
+    # Load data
+    df = pd.read_csv('./globalDiseaseOutbreaks/Outbreaks.csv').drop(columns='Unnamed: 0')
+
+    # Convert year to datetime for easier filtering
+    df['date'] = pd.to_datetime(df['Year'].astype(str) + "-01-01")  # Assume January 1st as date
+
+    return df
+
+def calculate_outbreak_trends(df, countries, start_date, end_date):
+    """Calculate statistics on infectious disease outbreaks for selected countries and date range."""
+    df_filtered = df[
+        (df['Country'].isin(countries)) & 
+        (df['date'] >= start_date) & 
+        (df['date'] <= end_date)
+    ]
+    
+    # Calculate metrics
+    total_unique_outbreaks = df_filtered['Disease'].nunique()
+    unique_diseases_list = df_filtered['Disease'].unique()
+    frequency_of_each_disease = df_filtered['Disease'].value_counts().to_dict()
+    icd10_categories_count = df_filtered['icd10c'].nunique()
+    icd11_categories_count = df_filtered['icd11c1'].nunique()
+    
+    yearly_outbreak_trend = df_filtered.groupby(df_filtered['date'].dt.year).size().to_dict()
+
+    return {
+        "total_unique_outbreaks": total_unique_outbreaks,
+        "unique_diseases_list": list(unique_diseases_list),
+        "frequency_of_each_disease (years)": frequency_of_each_disease,
+        "icd10_categories_count": icd10_categories_count,
+        "icd11_categories_count": icd11_categories_count,
+        "yearly_outbreak_trend": yearly_outbreak_trend
+    }
+
+# Load data
+outbreaks_df = load_data()
+
 # Define a function to calculate infectious case trends
 def calculate_infectious_cases_trends(df, entity, start_date, end_date, disease_condition):
-    start_year = int(pd.to_datetime(start_date).year)
-    end_year = int(pd.to_datetime(end_date).year)
+    start_date = pd.to_datetime(start_date)  # Convert to datetime
+    end_date = pd.to_datetime(end_date)      # Convert to datetime
+
+    start_year = start_date.year
+    end_year = end_date.year
+
     df['date'] = pd.to_datetime(df['Year'].astype(str) + "-01-01")
 
     df_filtered = df[(df['Entity'] == entity) & (df['date'] >= start_date) & (df['date'] <= end_date)]
@@ -53,12 +102,6 @@ def calculate_infectious_cases_trends(df, entity, start_date, end_date, disease_
 # Load data
 outbreaks_df = load_outbreak_data()
 infectiouscases = load_infectious_cases_data()
-
-# Set up tabs in Streamlit
-st.set_page_config(
-    page_title='Infectious Disease Analysis',
-    page_icon=':microbe:',
-)
 
 tab1, tab2 = st.tabs(["Global Outbreak Dashboard", "Infectious Disease Trend Analysis"])
 
@@ -144,8 +187,10 @@ with tab2:
     st.write("Select parameters to analyze trends for infectious diseases.")
 
     entity = st.selectbox("Select Entity", options=infectiouscases['Entity'].unique(), index=0)
-    start_date = st.date_input("Select Start Date", value=pd.to_datetime("1920-01-01"))
-    end_date = st.date_input("Select End Date", value=pd.to_datetime("2020-12-31"))
+
+    start_date = st.date_input("Select Start Date", value=pd.to_datetime("1920-01-01").date())
+    end_date = st.date_input("Select End Date", value=pd.to_datetime("2020-12-31").date())
+
     disease_condition = st.selectbox("Select Disease Condition", options=['All'] + [
         'polio', 'guinea worm', 'rabies', 'malaria', 'hiv/aids', 'tuberculosis', 'smallpox', 'cholera'
     ])
