@@ -1,151 +1,172 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import plotly.express as px
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
-
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Load the dataset
+@st.cache_data
+def load_outbreak_data():
+    df = pd.read_csv('./globalDiseaseOutbreaks/Outbreaks.csv').drop(columns='Unnamed: 0')
+    df['date'] = pd.to_datetime(df['Year'].astype(str) + "-01-01")  # Convert year to datetime
+    return df
 
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def load_infectious_cases_data():
+    return pd.read_csv('infectiouscases.csv')
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# Define a function to calculate infectious case trends
+def calculate_infectious_cases_trends(df, entity, start_date, end_date, disease_condition):
+    start_year = int(pd.to_datetime(start_date).year)
+    end_year = int(pd.to_datetime(end_date).year)
+    df['date'] = pd.to_datetime(df['Year'].astype(str) + "-01-01")
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    df_filtered = df[(df['Entity'] == entity) & (df['date'] >= start_date) & (df['date'] <= end_date)]
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+    if disease_condition:
+        if disease_condition not in df_filtered.columns:
+            raise ValueError(f"Disease condition '{disease_condition}' not found in the dataset.")
+        total_cases_per_disease = {disease_condition: df_filtered[disease_condition].sum(skipna=True)}
+        total_cases_overall = total_cases_per_disease[disease_condition]
+        missing_data_per_disease = {disease_condition: df_filtered[disease_condition].isna().sum()}
+    else:
+        total_cases_per_disease = df_filtered.iloc[:, 3:].sum(numeric_only=True, skipna=True).to_dict()
+        total_cases_overall = sum(total_cases_per_disease.values())
+        missing_data_per_disease = df_filtered.iloc[:, 3:].isna().sum().to_dict()
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+    all_years = set(range(start_year, end_year + 1))
+    missing_years = all_years.difference(set(df_filtered['Year']))
+    missing_data_flag = len(missing_years) > 0
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    if disease_condition:
+        yearly_disease_trends = df_filtered.groupby('Year')[disease_condition].sum().to_dict()
+    else:
+        yearly_disease_trends = df_filtered.groupby('Year').sum(numeric_only=True).to_dict(orient='index')
 
-    return gdp_df
+    return {
+        "total_cases_per_disease": total_cases_per_disease,
+        "total_cases_overall": total_cases_overall,
+        "missing_data_flag": missing_data_flag,
+        "missing_years": list(missing_years),
+        "missing_data_per_disease": missing_data_per_disease,
+        "yearly_disease_trends": yearly_disease_trends
+    }
 
-gdp_df = get_gdp_data()
+# Load data
+outbreaks_df = load_outbreak_data()
+infectiouscases = load_infectious_cases_data()
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
+# Set up tabs in Streamlit
+st.set_page_config(
+    page_title='Infectious Disease Analysis',
+    page_icon=':microbe:',
 )
 
-''
-''
+tab1, tab2 = st.tabs(["Global Outbreak Dashboard", "Infectious Disease Trend Analysis"])
 
+# --------------------------------------------------------------------
+# Tab 1: Global Outbreak Dashboard
+with tab1:
+    st.title(":microbe: Infectious Disease Outbreak Dashboard")
+    st.markdown("""
+        This dashboard displays data on infectious disease outbreaks globally. 
+        You can filter by country and time range to explore trends and visualize data over time.
+    """)
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+    min_year = int(outbreaks_df['Year'].min())
+    max_year = int(outbreaks_df['Year'].max())
 
-st.header(f'GDP in {to_year}', divider='gray')
+    start_year, end_year = st.slider(
+        "Select time range",
+        min_value=min_year,
+        max_value=max_year,
+        value=[min_year, max_year]
+    )
 
-''
+    countries = outbreaks_df['Country'].unique()
+    selected_countries = st.multiselect(
+        "Select countries of interest",
+        countries,
+        ['Afghanistan', 'Brazil', 'India']
+    )
 
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+    if not selected_countries:
+        st.warning("Please select at least one country.")
+    else:
+        outbreak_stats = calculate_outbreak_trends(
+            outbreaks_df, 
+            countries=selected_countries, 
+            start_date=f"{start_year}-01-01", 
+            end_date=f"{end_year}-12-31"
         )
+
+        yearly_trend_df = pd.DataFrame({
+            "Year": list(outbreak_stats['yearly_outbreak_trend'].keys()),
+            "Outbreaks": list(outbreak_stats['yearly_outbreak_trend'].values())
+        })
+
+        st.header("Outbreak Trend Over Time")
+        st.line_chart(yearly_trend_df, x='Year', y='Outbreaks')
+
+        cols = st.columns(4)
+
+        with cols[0]:
+            st.metric("Total Unique Outbreaks", outbreak_stats["total_unique_outbreaks"])
+        
+        with cols[1]:
+            st.metric("ICD-10 Categories", outbreak_stats["icd10_categories_count"])
+        
+        with cols[2]:
+            st.metric("ICD-11 Categories", outbreak_stats["icd11_categories_count"])
+
+        with cols[3]:
+            st.metric("Countries Selected", len(selected_countries))
+
+        country_outbreak_counts = outbreaks_df.groupby("Country").size().reset_index(name='Outbreaks')
+        fig = px.choropleth(
+            country_outbreak_counts,
+            locations="Country",
+            locationmode="country names",
+            color="Outbreaks",
+            hover_name="Country",
+            color_continuous_scale="Viridis",
+            labels={"Outbreaks": "Number of Outbreaks"}
+        )
+
+        st.plotly_chart(fig)
+
+        st.header("Frequency of Each Disease")
+        disease_counts_df = pd.DataFrame(list(outbreak_stats["frequency_of_each_disease (years)"].items()), columns=["Disease", "Count"])
+        st.dataframe(disease_counts_df)
+
+# --------------------------------------------------------------------
+# Tab 2: Infectious Disease Trend Analysis
+with tab2:
+    st.title("Infectious Disease Trend Analysis")
+    st.write("Select parameters to analyze trends for infectious diseases.")
+
+    entity = st.selectbox("Select Entity", options=infectiouscases['Entity'].unique(), index=0)
+    start_date = st.date_input("Select Start Date", value=pd.to_datetime("1920-01-01"))
+    end_date = st.date_input("Select End Date", value=pd.to_datetime("2020-12-31"))
+    disease_condition = st.selectbox("Select Disease Condition", options=['All'] + [
+        'polio', 'guinea worm', 'rabies', 'malaria', 'hiv/aids', 'tuberculosis', 'smallpox', 'cholera'
+    ])
+
+    if st.button("Analyze"):
+        selected_disease = None if disease_condition == 'All' else disease_condition
+        try:
+            result = calculate_infectious_cases_trends(infectiouscases, entity, start_date, end_date, selected_disease)
+
+            st.subheader("Analysis Results")
+            if result['missing_data_flag']:
+                st.warning("Data contains missing years. These are estimated values and may not be reflective of true statistics due to missing data.")
+
+            st.write("### Total Cases Overall")
+            st.write(result['total_cases_overall'])
+
+            st.write("### Total Cases per Disease")
+            st.write(result['total_cases_per_disease'])
+
+            st.write("### Yearly Trends")
+            st.line_chart(pd.DataFrame(result['yearly_disease_trends']).transpose())
+        
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
